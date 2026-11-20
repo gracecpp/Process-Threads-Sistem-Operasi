@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 5 — What is a thread?</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 5</span>
+<span class="tag">Concept + tiny C</span>
+
+<h1>What is a thread?</h1>
+<p class="subtitle">Same process. Same memory. Two lines of execution running through it.</p>
+
+<h2>Recall</h2>
+<p>
+Processes are isolated: each has its own memory. That's safe, but if two processes want to cooperate, they have to shout across a fence (pipes, sockets, shared memory segments).
+</p>
+<p>
+Often you don't want a fence. You want multiple workers inside the <em>same</em> program, all reading and writing the same variables, working together on one job. That's a <strong>thread</strong>.
+</p>
+
+<h2>The one idea</h2>
+<p>
+A process is a container with:
+</p>
+<ul>
+  <li>An address space (code, heap, globals) — shared by everyone in the container.</li>
+  <li>A set of open files — shared.</li>
+  <li>One or more <strong>threads of execution</strong>, each with its own stack, its own program counter (which line it's on), its own CPU registers.</li>
+</ul>
+<p>
+When people say "a program has one thread by default," they mean: when <code>main()</code> starts, the process has exactly one worker. You can hire more with <code>pthread_create</code>.
+</p>
+
+<div class="callout">
+<span class="label">Mental model</span>
+<p style="margin:0.3rem 0 0">
+Process = a workshop.<br>
+Threads = workers inside it.<br>
+The tools, the workbench, the parts bin (memory) are shared. But each worker has their own hands (stack, registers) and can be doing a different task at the same time.
+</p>
+</div>
+
+<h2>Process vs Thread — side by side</h2>
+<table style="width:100%; border-collapse:collapse; margin:1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--rule);">
+      <th style="text-align:left; padding:0.4rem 0.6rem;"></th>
+      <th style="text-align:left; padding:0.4rem 0.6rem;">Process</th>
+      <th style="text-align:left; padding:0.4rem 0.6rem;">Thread</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Memory</td><td style="padding:0.4rem 0.6rem;">private</td><td style="padding:0.4rem 0.6rem;">shared with siblings</td></tr>
+    <tr style="border-bottom: 1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Stack</td><td style="padding:0.4rem 0.6rem;">its own</td><td style="padding:0.4rem 0.6rem;">its own</td></tr>
+    <tr style="border-bottom: 1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Created by</td><td style="padding:0.4rem 0.6rem;"><code>fork()</code></td><td style="padding:0.4rem 0.6rem;"><code>pthread_create()</code></td></tr>
+    <tr style="border-bottom: 1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Waited on with</td><td style="padding:0.4rem 0.6rem;"><code>wait()</code></td><td style="padding:0.4rem 0.6rem;"><code>pthread_join()</code></td></tr>
+    <tr><td style="padding:0.4rem 0.6rem;">If one crashes</td><td style="padding:0.4rem 0.6rem;">siblings survive</td><td style="padding:0.4rem 0.6rem;">whole process dies</td></tr>
+  </tbody>
+</table>
+
+<h2>See it in C</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;pthread.h&gt;
+
+void *worker(void *arg) {
+    char *name = (char *)arg;
+    for (int i = 0; i &lt; 3; i++)
+        printf("  %s: step %d\n", name, i);
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&amp;t1, NULL, worker, "A");
+    pthread_create(&amp;t2, NULL, worker, "B");
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    printf("main: both done\n");
+    return 0;
+}
+</code></pre>
+
+<p>Compile with <code>-pthread</code>:</p>
+<pre><code>$ cc -pthread threads_demo.c -o threads_demo
+$ ./threads_demo
+  A: step 0
+  B: step 0
+  A: step 1
+  B: step 1
+  A: step 2
+  B: step 2
+main: both done
+</code></pre>
+
+<p>
+Two things to notice. First: the <code>printf</code>s are interleaved — that's two threads actually running in parallel (or rapidly time-sliced). Second: the interleaving order is <em>not the same every run</em>. Run it ten times; you'll see different orderings. This is the concurrency non-determinism we tasted with <code>fork()</code>, now much more in your face.
+</p>
+
+<h2>Two must-know functions</h2>
+<ul>
+  <li><code>pthread_create(&amp;handle, attr, fn, arg)</code> — start a new thread. It will run <code>fn(arg)</code>. The <code>attr</code> is usually <code>NULL</code>.</li>
+  <li><code>pthread_join(handle, &amp;retval)</code> — block until that thread finishes. Analogous to <code>wait()</code> for processes.</li>
+</ul>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">Thread A writes 42 to a global variable. What does thread B see when reading it?</p>
+  <button class="choice">Its own private old value.</button>
+  <button class="choice" data-correct="true">Forty-two, the value written.</button>
+  <button class="choice">Nothing, threads are isolated.</button>
+  <p class="explain">Threads share the process's memory. Globals, heap, static data — one copy, visible to all threads. (Timing of when B sees it is a subtler question, coming in Lesson 6.)</p>
+</div>
+
+<div class="quiz">
+  <p class="q">Thread A dereferences a null pointer and segfaults. What happens to thread B?</p>
+  <button class="choice">B keeps running normally.</button>
+  <button class="choice" data-correct="true">B dies with the process.</button>
+  <button class="choice">B receives an error code.</button>
+  <p class="explain">Threads share a process. If one crashes the process, the whole process dies — and every thread with it. That's the flip side of shared memory.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">Which one creates a new address space?</p>
+  <button class="choice" data-correct="true">A call to fork now.</button>
+  <button class="choice">A call to pthread now.</button>
+  <button class="choice">Both do the same thing.</button>
+  <p class="explain">Only <code>fork</code> gives you a fresh address space. <code>pthread_create</code> adds a worker to the current one.</p>
+</div>
+
+<h2>Try it yourself</h2>
+<ol>
+  <li>Compile and run <code>threads_demo.c</code> five times. Note how the interleaving of A and B differs.</li>
+  <li>Bump the loop from <code>3</code> to <code>1000</code>. Redirect output to a file and grep for how many A's came before the first B.</li>
+  <li><strong>Bonus:</strong> add a global <code>int counter = 0;</code> and, in <code>worker</code>, loop <code>counter++</code> a million times. After both threads join, print <code>counter</code>. You expect 2 000 000. You will not get it. Save the surprising number — Lesson 6 explains why.</li>
+</ol>
+
+<h2>Read one thing</h2>
+<p>Primary: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf">OSTEP Chapter 26 — "Concurrency: An Introduction"</a>. Man pages: <a href="https://man7.org/linux/man-pages/man7/pthreads.7.html">man 7 pthreads</a>.</p>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">The bonus exercise is a trap — a good one. Try it; when it surprises you, come tell me what you saw. Lesson 6 turns that surprise into a concept.</p>
+</div>
+
+<div class="lesson-footer">
+Next up (Lesson 6): <em>Race conditions — when shared memory bites back.</em><br>
+See also: <a href="0001-what-is-a-process.html">L1</a> · <a href="0002-fork-returns-twice.html">L2</a> · <a href="0003-wait-and-zombies.html">L3</a> · <a href="0004-exec-and-the-shell.html">L4</a> · <a href="../reference/glossary.html">Glossary</a>
+</div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 4 — exec(): how the shell runs a program</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 4</span>
+<span class="tag">syscall + tiny C</span>
+
+<h1>exec(): how the shell runs a program</h1>
+<p class="subtitle">fork makes a clone. exec turns the clone into someone else entirely.</p>
+
+<h2>Recall</h2>
+<p>
+<code>fork()</code> makes a copy of the current process. But if the copy runs the <em>same</em> program, how does the shell launch <code>ls</code>? It needs a way to say: "become a different program."
+</p>
+
+<h2>The one idea</h2>
+<p>
+The <code>exec…()</code> family of calls does exactly that. It says to the kernel:
+<em>"Throw away my current program's code and memory, load this other executable in its place, and start running it from its <code>main()</code>."</em>
+</p>
+<p>
+The process's <strong>PID stays the same</strong>. Its open files stay the same. But its code, its data, its stack — all replaced. From the outside, it's the same process; from the inside, it woke up as a completely new program.
+</p>
+
+<div class="callout">
+<span class="label">The Unix pattern</span>
+<p style="margin:0.3rem 0 0">
+Almost every program on your system was started this way: <strong>fork, then exec.</strong>
+Fork gives you a fresh process to sacrifice. Exec turns it into the program you actually wanted to run. This is how your shell runs <code>ls</code>, how <code>make</code> runs <code>gcc</code>, how a web server spawns a CGI script.
+</p>
+</div>
+
+<h2>See it in C</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/wait.h&gt;
+
+int main(void) {
+    pid_t rc = fork();
+    if (rc == 0) {
+        /* child: become "ls -l /" */
+        char *argv[] = {"ls", "-l", "/", NULL};
+        execvp("ls", argv);
+        perror("execvp failed");   /* only reached if exec failed */
+    } else {
+        wait(NULL);
+        printf("parent: ls is done\n");
+    }
+    return 0;
+}
+</code></pre>
+
+<pre><code>$ ./shell_lite
+total 68
+drwxr-xr-x   2 root root  4096 ... bin
+...
+parent: ls is done
+</code></pre>
+
+<p>
+Read that program carefully. The child called <code>execvp</code> and <em>never came back</em>. The line after it (<code>perror</code>) only runs if <code>exec</code> failed — because on success there is no "after"; the whole program has been replaced by <code>ls</code>.
+</p>
+
+<h3>Why the family of names?</h3>
+<p>All the <code>exec…</code> calls do the same thing; they differ in argument style:</p>
+<ul>
+  <li><code>execv</code> — takes an <em>array</em> of arguments.</li>
+  <li><code>execl</code> — takes a <em>list</em> of arguments (as varargs).</li>
+  <li><code>…p</code> suffix (<code>execvp</code>, <code>execlp</code>) — searches your <code>$PATH</code>, so you can say <code>"ls"</code> not <code>"/bin/ls"</code>.</li>
+  <li><code>…e</code> suffix — lets you pass a custom environment.</li>
+</ul>
+<p>Mnemonic: <b>v</b>ector, <b>l</b>ist, <b>p</b>ath, <b>e</b>nvironment. Mix and match.</p>
+
+<h2>The full shell recipe</h2>
+<p>Every interactive shell (bash, zsh, sh) is basically this loop:</p>
+<pre><code>while (read_command(&amp;cmd)) {
+    pid_t rc = fork();
+    if (rc == 0) {
+        execvp(cmd.name, cmd.argv);   /* becomes the requested program */
+        exit(1);                       /* only if exec failed */
+    } else {
+        waitpid(rc, NULL, 0);          /* wait for it to finish */
+    }
+}
+</code></pre>
+<p>That's it. Everything else — pipes, redirection, background jobs, job control — is decoration on this core.</p>
+
+<h2>Why the split?</h2>
+<p>
+It would seem simpler if there were one call <code>spawn(program, args)</code>. Unix chose to split it into <code>fork</code> + <code>exec</code> because of what you can do <em>between</em> them: while you're in the freshly-forked child but before you exec, you can close/redirect file descriptors, change directory, drop privileges, set up a new environment. That's how the shell implements <code>&gt;</code>, <code>&lt;</code>, and <code>|</code> — plain old syscalls between fork and exec.
+</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">After a successful <code>exec()</code>, does the code line right after it run?</p>
+  <button class="choice">Yes, it runs first ok.</button>
+  <button class="choice" data-correct="true">No, it never runs then.</button>
+  <button class="choice">Only if the exec worked.</button>
+  <p class="explain">On success, the old program is entirely replaced — there is no "next line". Code after <code>exec</code> only runs if the call failed.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">You <code>exec()</code> a new program. What is its PID?</p>
+  <button class="choice">A fresh PID from kernel.</button>
+  <button class="choice" data-correct="true">Same PID as the caller.</button>
+  <button class="choice">Zero for the new prog.</button>
+  <p class="explain"><code>exec</code> keeps the same PID — same process, new program. Only <code>fork</code> makes new PIDs.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">Why does the shell fork <em>before</em> exec, instead of just exec-ing?</p>
+  <button class="choice">Fork is required by C.</button>
+  <button class="choice">Exec cannot start new prog.</button>
+  <button class="choice" data-correct="true">Else the shell would vanish.</button>
+  <p class="explain">If the shell exec'd directly, its own program would be replaced by <code>ls</code> and disappear. Fork gives us a sacrificial child to exec, so the shell survives to prompt again.</p>
+</div>
+
+<h2>Try it yourself</h2>
+<ol>
+  <li>Run <code>shell_lite.c</code> as written. Then change <code>"ls"</code> to <code>"/bin/date"</code> and drop the args (just <code>{"date", NULL}</code>).</li>
+  <li>Delete the <code>fork()</code> and just call <code>execvp</code> directly. Compile and run. Notice: your program becomes <code>ls</code> and never prints "parent" — that's the point of forking first.</li>
+  <li><strong>Bonus:</strong> between fork and exec in the child, add <code>freopen("out.txt", "w", stdout);</code>. Now <code>ls</code>'s output lands in <code>out.txt</code>. Congratulations — you just implemented <code>&gt;</code>.</li>
+</ol>
+
+<h2>Read one thing</h2>
+<p>Primary: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf">OSTEP Chapter 5</a>, §5.3 (exec) and §5.4 ("Why? Motivating the API"). Man page: <a href="https://man7.org/linux/man-pages/man3/exec.3.html">man 3 exec</a>.</p>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">Want to try building the tiniest possible shell (a real REPL that runs commands)? Say the word and we'll do a bonus lesson.</p>
+</div>
+
+<div class="lesson-footer">
+Next up (Lesson 5): <em>Threads — many workers, one shared workshop.</em><br>
+See also: <a href="0001-what-is-a-process.html">L1</a> · <a href="0002-fork-returns-twice.html">L2</a> · <a href="0003-wait-and-zombies.html">L3</a> · <a href="../reference/glossary.html">Glossary</a>
+</div>
+
+</main>
+</body>
+</html>

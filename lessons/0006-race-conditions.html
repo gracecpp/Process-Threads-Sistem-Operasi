@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 6 — Race conditions</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 6</span>
+<span class="tag">Concept + tiny C</span>
+
+<h1>Race conditions</h1>
+<p class="subtitle">Why <code>counter++</code>, run by two threads, does not add up.</p>
+
+<h2>Recall</h2>
+<p>
+The bonus at the end of <a href="0005-what-is-a-thread.html">Lesson 5</a>: two threads each did <code>counter++</code> a million times. You expected 2 000 000. You got some number smaller — and different every run.
+</p>
+<p>That's a <strong>race condition</strong>. Let's see exactly what happened.</p>
+
+<h2>The one idea</h2>
+<p><code>counter++</code> looks like one step in C. To the CPU, it is three:</p>
+<ol>
+  <li>Read <code>counter</code> from memory into a register.</li>
+  <li>Add 1 to the register.</li>
+  <li>Write the register back to memory.</li>
+</ol>
+<p>
+The kernel can pause a thread <em>between any two instructions</em>. So threads A and B can interleave in the middle of a single <code>counter++</code>.
+</p>
+
+<div class="callout">
+<span class="label">The losing interleaving</span>
+<pre style="margin:0.4rem 0 0; background:transparent; border:none; padding:0;"><code>counter = 100.
+
+Thread A: read counter -> reg = 100
+                                     Thread B: read counter -> reg = 100
+                                     Thread B: reg = 101
+                                     Thread B: write reg -> counter = 101
+Thread A: reg = 101
+Thread A: write reg -> counter = 101
+
+counter is 101. Two increments happened. Only one counted.
+</code></pre>
+</div>
+
+<p>
+This is called a <strong>lost update</strong>. Every time the kernel picks that interleaving, one increment vanishes. Do it a few thousand times and your total is short by thousands.
+</p>
+
+<h2>The definition</h2>
+<p>
+A <strong>race condition</strong> is a bug where the correctness of your program depends on the timing / ordering of threads, and the kernel gives you no such guarantee. The section of code involved — the read-modify-write on <code>counter</code> — is called a <strong>critical section</strong>.
+</p>
+
+<h2>See it (and measure it)</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;pthread.h&gt;
+
+int counter = 0;
+
+void *bump(void *arg) {
+    for (int i = 0; i &lt; 1000000; i++)
+        counter++;                  /* THE CRITICAL SECTION */
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&amp;t1, NULL, bump, NULL);
+    pthread_create(&amp;t2, NULL, bump, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    printf("counter = %d  (expected 2000000)\n", counter);
+    return 0;
+}
+</code></pre>
+
+<pre><code>$ ./race
+counter = 1348217  (expected 2000000)
+$ ./race
+counter = 1502994  (expected 2000000)
+$ ./race
+counter = 1197033  (expected 2000000)
+</code></pre>
+
+<p>Three runs, three wrong answers, all different. That variability is the signature of a race.</p>
+
+<div class="callout">
+<span class="label">The scary part</span>
+<p style="margin:0.3rem 0 0">
+On a fast enough machine with light contention, races sometimes look like they "work" for months, then blow up in production. A race that's silent 99.99% of the time is still a bug — the ordering the kernel gave you today isn't a guarantee for tomorrow.
+</p>
+</div>
+
+<h2>What DOESN'T fix it</h2>
+<ul>
+  <li><b>Making the variable <code>volatile</code></b> — <code>volatile</code> tells the compiler not to optimize accesses away. It doesn't make read-modify-write atomic. Doesn't help.</li>
+  <li><b>Just adding <code>printf</code>s</b> — they change timing, so the bug hides. Doesn't fix it. This is called a <em>Heisenbug</em>.</li>
+  <li><b>Running on one CPU core</b> — even a single core context-switches between threads. The race still fires.</li>
+</ul>
+
+<h2>What DOES fix it</h2>
+<p>
+You need to make the three sub-instructions of <code>counter++</code> behave as one indivisible step. Either:
+</p>
+<ol>
+  <li>Wrap them in a <strong>mutex</strong> — a lock that lets only one thread into the critical section at a time. This is <a href="0007-mutex.html">Lesson 7</a>.</li>
+  <li>Use an <strong>atomic instruction</strong> — special CPU operations designed for exactly this. (<code>&lt;stdatomic.h&gt;</code> in C11; a topic for later.)</li>
+</ol>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">The <code>counter++</code> in C compiles to how many CPU steps?</p>
+  <button class="choice">Just one atomic instruction.</button>
+  <button class="choice" data-correct="true">Three: load, add, store.</button>
+  <button class="choice">Two: read then also write.</button>
+  <p class="explain">Read into register, increment the register, write back. Any two of those can be interleaved with another thread — that's the crack the race slips through.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">A race gives the wrong answer 1 run in 1000. It's:</p>
+  <button class="choice">Basically fine to ship.</button>
+  <button class="choice" data-correct="true">A real bug to fix now.</button>
+  <button class="choice">Impossible without more locks.</button>
+  <p class="explain">Timing changes with load, hardware, and updates. A rare race becomes a common one at the worst moment. Fix it once you can reproduce it — even barely.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">Which of these actually fixes the counter race?</p>
+  <button class="choice">Mark counter as volatile.</button>
+  <button class="choice">Add printfs in the loop.</button>
+  <button class="choice" data-correct="true">Guard access with mutex.</button>
+  <p class="explain">Only real mutual exclusion makes the read-modify-write indivisible. <code>volatile</code> is about compiler optimization, not atomicity. <code>printf</code>s just change the timing.</p>
+</div>
+
+<h2>Try it yourself</h2>
+<ol>
+  <li>Run the race demo above 10 times. Record the results. Note how far short of 2 000 000 they are, and how they vary.</li>
+  <li>Try to make it "worse": pin your machine's CPU load, or increase the loop to 10 million. The lost fraction usually grows.</li>
+  <li>Come back after Lesson 7 and re-run with a mutex. Confirm you get exactly 2 000 000, every time.</li>
+</ol>
+
+<h2>Read one thing</h2>
+<p>Primary: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf">OSTEP Chapter 26</a>, §26.2–26.3 (the race, the critical section).</p>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">If you want to see the assembly for <code>counter++</code> and count the three instructions with your own eyes, ask — <code>gcc -S</code> is a one-liner away.</p>
+</div>
+
+<div class="lesson-footer">
+Next up (Lesson 7): <em>Mutex — the fix.</em><br>
+See also: <a href="0005-what-is-a-thread.html">L5</a> · <a href="0007-mutex.html">L7</a> · <a href="../reference/glossary.html">Glossary</a>
+</div>
+
+</main>
+</body>
+</html>

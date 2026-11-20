@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 8 — Build a tiny shell</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 8</span>
+<span class="tag">capstone</span>
+
+<h1>Build a tiny shell</h1>
+<p class="subtitle">Every syscall from L2–L4, wired together into a program you can actually type into.</p>
+
+<h2>Why this lesson</h2>
+<p>
+So far each syscall lived in its own toy program. A shell is where they finally meet. Bash, zsh, sh, dash — every one of them is fundamentally the loop you're about to write. The rest is decoration: history, tab-completion, prompts, colors. The <em>heart</em> is about 40 lines of C.
+</p>
+<p>
+When you finish this lesson, you will have typed <code>ls -l</code> into a program <em>you wrote</em>, and watched it run. That's the "aha" the whole mission was aiming at.
+</p>
+
+<h2>The recipe (recall)</h2>
+<p>From <a href="0004-exec-and-the-shell.html">Lesson 4</a>, the core loop of every shell:</p>
+<pre><code>while (read a line from the user) {
+    split the line into words;
+    fork();
+    if (child) execvp(words[0], words);
+    else       waitpid(child_pid, ...);
+}
+</code></pre>
+<p>That's it. Four verbs: <b>read, fork, exec, wait.</b></p>
+
+<h2>Stage 1 — the skeleton</h2>
+<p>Start here. It prompts, reads a line, and echoes it back. No forking yet.</p>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+int main(void) {
+    char line[1024];
+    for (;;) {
+        printf("tsh&gt; ");
+        fflush(stdout);
+        if (!fgets(line, sizeof line, stdin)) break;   /* Ctrl-D exits */
+        line[strcspn(line, "\n")] = 0;                  /* strip newline */
+        if (line[0] == 0) continue;                     /* empty line */
+        printf("you said: %s\n", line);
+    }
+    return 0;
+}
+</code></pre>
+
+<p>Save as <code>tsh.c</code>, then:</p>
+<pre><code>$ cc -Wall -o tsh tsh.c
+$ ./tsh
+tsh&gt; hello
+you said: hello
+tsh&gt; ^D
+$</code></pre>
+
+<div class="callout">
+<span class="label">Checkpoint</span>
+<p style="margin:0.3rem 0 0">You have a REPL. Ctrl-D exits cleanly because <code>fgets</code> returns <code>NULL</code> on EOF. Nothing runs yet — but the skeleton is real.</p>
+</div>
+
+<h2>Stage 2 — split the line into words</h2>
+<p>
+<code>execvp</code> wants an array like <code>{"ls", "-l", "/", NULL}</code>. The classic tool is <code>strtok</code>, which walks a string and hands back one whitespace-separated token per call.
+</p>
+
+<pre><code>#define MAX_ARGS 64
+
+static int split(char *line, char *argv[]) {
+    int n = 0;
+    char *tok = strtok(line, " \t");
+    while (tok &amp;&amp; n &lt; MAX_ARGS - 1) {
+        argv[n++] = tok;
+        tok = strtok(NULL, " \t");
+    }
+    argv[n] = NULL;    /* execvp requires NULL-terminated array */
+    return n;
+}
+</code></pre>
+
+<p>Drop that above <code>main</code>, and inside the loop replace the "you said" line with:</p>
+<pre><code>char *argv[MAX_ARGS];
+int argc = split(line, argv);
+if (argc == 0) continue;
+for (int i = 0; i &lt; argc; i++) printf("[%d] %s\n", i, argv[i]);
+</code></pre>
+
+<pre><code>tsh&gt; ls -l /tmp
+[0] ls
+[1] -l
+[2] /tmp</code></pre>
+
+<h2>Stage 3 — fork &amp; exec</h2>
+<p>Now the payoff. Replace the print loop with the real thing:</p>
+
+<pre><code>#include &lt;unistd.h&gt;
+#include &lt;sys/wait.h&gt;
+
+pid_t pid = fork();
+if (pid &lt; 0) { perror("fork"); continue; }
+
+if (pid == 0) {
+    /* child: become the requested program */
+    execvp(argv[0], argv);
+    perror(argv[0]);        /* only reached if exec failed */
+    _exit(127);              /* traditional "command not found" code */
+} else {
+    /* parent: wait for the child to finish */
+    int status;
+    waitpid(pid, &amp;status, 0);
+}
+</code></pre>
+
+<p>Rebuild and try it:</p>
+<pre><code>tsh&gt; ls
+tsh  tsh.c
+tsh&gt; echo hello world
+hello world
+tsh&gt; date
+Mon Sep 21 12:00:00 UTC 2026
+tsh&gt; nope
+nope: No such file or directory
+tsh&gt; ^D</code></pre>
+
+<p>You just wrote a shell. Every command you typed followed the full fork→exec→wait dance from Lessons 2–4.</p>
+
+<h2>Stage 4 — one built-in: <code>cd</code></h2>
+<p>Try <code>cd /tmp</code>. It "works" — no error — but <code>pwd</code> shows you didn't move. Why?</p>
+
+<div class="callout">
+<span class="label">Think it through</span>
+<p style="margin:0.3rem 0 0">
+If <code>cd</code> ran in the child (after fork), the child's directory would change… then the child would exit. The parent shell — the one that survives to prompt again — never moved. <code>cd</code> <em>must</em> run in the shell process itself. That's why every shell has "built-in" commands: they're the ones that can't be a separate program.
+</p>
+</div>
+
+<p>Fix: before the fork, check for built-ins:</p>
+<pre><code>if (strcmp(argv[0], "cd") == 0) {
+    const char *dir = argv[1] ? argv[1] : getenv("HOME");
+    if (chdir(dir) != 0) perror("cd");
+    continue;                /* skip the fork/exec path */
+}
+if (strcmp(argv[0], "exit") == 0) break;
+</code></pre>
+
+<p>Now <code>cd</code> and <code>exit</code> behave. Congratulations — you have discovered, from first principles, why <code>cd</code> is <em>always</em> a shell built-in and never a program in <code>/usr/bin</code>.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">Why can't <code>cd</code> be an ordinary program in <code>/bin</code>?</p>
+  <button class="choice">chdir needs root perms.</button>
+  <button class="choice" data-correct="true">Child's cd wont move par.</button>
+  <button class="choice">Exec always kills chdir.</button>
+  <p class="explain">A forked child that calls <code>chdir</code> changes only its own working directory, then exits. The parent shell is untouched. So <code>cd</code> must run in the shell process itself — a built-in.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">What is the <code>NULL</code> at the end of <code>argv</code> for?</p>
+  <button class="choice">Marks the exit status.</button>
+  <button class="choice">Reserved for env vars.</button>
+  <button class="choice" data-correct="true">Tells exec where end is.</button>
+  <p class="explain"><code>execvp</code> has no separate argument count; it walks the array until it hits <code>NULL</code>. Forget it and <code>exec</code> reads past your data — undefined behavior.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">What if you removed the <code>waitpid</code> in the parent branch?</p>
+  <button class="choice">Command wouldnt run ok.</button>
+  <button class="choice" data-correct="true">Prompt races with child.</button>
+  <button class="choice">The child becomes root.</button>
+  <p class="explain">Without <code>waitpid</code>, the shell prints its next prompt immediately while the child is still running. Output interleaves; finished children become zombies (see <a href="0003-wait-and-zombies.html">L3</a>). This is, in fact, exactly how the shell's <code>&amp;</code> (background) works.</p>
+</div>
+
+<h2>Stretch goals</h2>
+<p>Pick one — each is a small extension of what you have:</p>
+<ol>
+  <li><b>Background jobs:</b> if the last token is <code>&amp;</code>, drop it and skip the <code>waitpid</code>. You've just implemented <code>ls &amp;</code>.</li>
+  <li><b>Redirection:</b> if <code>argv</code> contains <code>&gt;</code>, remove it and the following filename, then in the child call <code>freopen(filename, "w", stdout)</code> before <code>execvp</code>. You've implemented <code>ls &gt; out.txt</code>.</li>
+  <li><b>Exit status:</b> after <code>waitpid</code>, print <code>WEXITSTATUS(status)</code> when it's nonzero. That's what <code>$?</code> is in bash.</li>
+  <li><b>A prompt with the cwd:</b> use <code>getcwd</code> to show where you are.</li>
+</ol>
+<p>Each of these is 3–5 lines. None require anything you haven't seen.</p>
+
+<h2>Read one thing</h2>
+<p>Primary: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf">OSTEP Chapter 5</a>, §5.5 ("Process Control and Users") for context. Bonus: Stephen Brennan's short walkthrough <a href="https://brennan.io/2015/01/16/write-a-shell-in-c/">"Tutorial - Write a Shell in C"</a> — the same shape, with a few more built-ins.</p>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">Stuck compiling? Confused why a stretch goal doesn't behave? Ask. Also: once this feels solid, natural next arcs are <em>pipes</em> (the <code>|</code> operator, using <code>pipe()</code> + two forks) or <em>signals</em> (handling Ctrl-C without killing the shell).</p>
+</div>
+
+<div class="lesson-footer">
+Capstone. See also: <a href="0002-fork-returns-twice.html">L2 fork</a> · <a href="0003-wait-and-zombies.html">L3 wait</a> · <a href="0004-exec-and-the-shell.html">L4 exec</a> · <a href="../reference/cheatsheet.html">Cheatsheet</a> · <a href="../reference/glossary.html">Glossary</a>
+</div>
+
+</main>
+</body>
+</html>

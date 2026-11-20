@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 2 — fork(): the call that returns twice</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 2</span>
+<span class="tag">syscall + tiny C</span>
+
+<h1>fork(): the call that returns twice</h1>
+<p class="subtitle">One line of C. Two processes come out the other side.</p>
+
+<h2>Recall from Lesson 1</h2>
+<p>
+A <a href="0001-what-is-a-process.html">process</a> is a running program with its own private memory and its own PID. So far we've only made processes the "obvious" way: by typing <code>./hello_pid</code> at the shell.
+</p>
+<p>
+Question: how does the shell <em>itself</em> make a new process when you press Enter? The answer is one Unix system call: <code>fork()</code>.
+</p>
+
+<h2>The one idea</h2>
+<p>
+<code>fork()</code> asks the kernel: "please clone me." The kernel makes a near-perfect copy of the current process — same code, same memory contents, same open files — and now <em>two</em> processes are running the exact same program, sitting on the exact same line of code.
+</p>
+<p>
+The trick is: how does each copy know whether it is the original ("parent") or the clone ("child")? The kernel tells them by giving each a <em>different return value</em> from that single <code>fork()</code> call:
+</p>
+
+<div class="callout">
+<span class="label">The rule</span>
+<p style="margin:0.3rem 0 0">
+In the <strong>parent</strong>, <code>fork()</code> returns the child's PID (a positive number).<br>
+In the <strong>child</strong>, <code>fork()</code> returns <code>0</code>.<br>
+On failure (in the parent only), <code>fork()</code> returns <code>-1</code>.
+</p>
+</div>
+
+<p>
+So the same line of code runs in two processes, and each one gets a different answer. That is why we say <em>fork returns twice</em>.
+</p>
+
+<h2>See it in C</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;    /* fork(), getpid(), getppid() */
+
+int main(void) {
+    printf("Before fork: I am %d.\n", getpid());
+
+    pid_t rc = fork();
+
+    if (rc &lt; 0) {
+        perror("fork failed");
+        return 1;
+    } else if (rc == 0) {
+        /* child branch: fork() returned 0 here */
+        printf("  child : pid=%d, parent=%d\n", getpid(), getppid());
+    } else {
+        /* parent branch: fork() returned the child's pid here */
+        printf("  parent: pid=%d, child=%d\n", getpid(), rc);
+    }
+    return 0;
+}
+</code></pre>
+
+<p>Typical run:</p>
+<pre><code>$ cc fork_demo.c -o fork_demo
+$ ./fork_demo
+Before fork: I am 51001.
+  parent: pid=51001, child=51002
+  child : pid=51002, parent=51001
+</code></pre>
+
+<p>
+Notice: <em>"Before fork"</em> printed once — there was only one process then. After <code>fork()</code>, both branches of the <code>if</code> ran, because both branches ran, in <em>different processes</em>. Same code file, two live workers.
+</p>
+
+<div class="callout">
+<span class="label">Gotcha</span>
+<p style="margin:0.3rem 0 0">
+The order of the two lines <em>after</em> <code>fork()</code> is not guaranteed. The child might print first, or the parent might. The kernel schedules them independently. Never assume an order — that is your first taste of concurrency.
+</p>
+</div>
+
+<h2>What gets copied?</h2>
+<p>Almost everything the process has, at the moment of the call:</p>
+<ul>
+  <li>All of memory — variables, heap, stack. But the copies are <strong>independent</strong>. If the child changes a variable, the parent doesn't see it.</li>
+  <li>Open file descriptors (stdin/stdout/stderr, open files, sockets). Parent and child share these — writing to stdout from either goes to the same terminal.</li>
+  <li>The current instruction. Both continue on the very next line after <code>fork()</code>.</li>
+</ul>
+<p>
+Two things the child gets fresh: a new PID, and a parent PID pointing at the original.
+</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">In the <em>child</em> process, what value does <code>fork()</code> return?</p>
+  <button class="choice">The parent's process id.</button>
+  <button class="choice" data-correct="true">Zero, exactly the number.</button>
+  <button class="choice">The child's own process id.</button>
+  <p class="explain">Zero in the child; the child's PID in the parent; -1 on failure. That's the whole convention — it's how each side tells which one it is.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">After <code>fork()</code>, the child modifies a global variable <code>x</code>. What does the parent see when it reads <code>x</code>?</p>
+  <button class="choice">It sees the new value the child wrote.</button>
+  <button class="choice" data-correct="true">It sees its old, unchanged value.</button>
+  <button class="choice">Undefined behavior, could be anything.</button>
+  <p class="explain">Each process gets its own copy of memory. Writes in one are invisible to the other. This is process isolation — the safety net that keeps unrelated programs from stepping on each other.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">You call <code>fork()</code> twice in a row, no other logic. How many processes exist afterward?</p>
+  <button class="choice">Two total processes exist now.</button>
+  <button class="choice">Three total processes exist now.</button>
+  <button class="choice" data-correct="true">Four total processes exist now.</button>
+  <p class="explain">First fork: 1 → 2. Both survivors run the second fork: 2 → 4. Each fork doubles the process count. This is a classic exam trick.</p>
+</div>
+
+<h2>Try it yourself</h2>
+<ol>
+  <li>Save the program as <code>fork_demo.c</code>, compile, and run it a few times. Note the PIDs change each run.</li>
+  <li>Add a line <em>before</em> <code>fork()</code>: <code>int x = 100;</code>. In the child branch, do <code>x = 999;</code> then print <code>x</code>. In the parent branch, print <code>x</code>. Confirm the parent still sees <code>100</code>.</li>
+  <li><strong>Bonus:</strong> put a second <code>fork()</code> right after the first, print <code>getpid()</code>, and count how many lines print. Convince yourself it's four.</li>
+</ol>
+
+<h2>Read one thing</h2>
+<p>
+Primary source: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf">OSTEP Chapter 5 — "Interlude: Process API"</a>. Focus on §5.1 (<code>fork()</code>). Also worth peeking at: <a href="https://man7.org/linux/man-pages/man2/fork.2.html">man 2 fork</a> — the official spec, one page.
+</p>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">Confused about why the OS would design it this way (why not one call that returns two things)? Ask — the history is genuinely interesting.</p>
+</div>
+
+<div class="lesson-footer">
+Next up (Lesson 3): <em><code>wait()</code>, zombies, and how the parent finds out its child is done.</em><br>
+See also: <a href="0001-what-is-a-process.html">Lesson 1</a> · <a href="../reference/glossary.html">Glossary</a> · <a href="../RESOURCES.md">Resources</a>
+</div>
+
+</main>
+</body>
+</html>

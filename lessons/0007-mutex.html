@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 7 — Mutex: the fix</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 7</span>
+<span class="tag">syscall + tiny C</span>
+
+<h1>Mutex: the fix</h1>
+<p class="subtitle">One key. One person in the room at a time.</p>
+
+<h2>Recall</h2>
+<p>
+<a href="0006-race-conditions.html">Lesson 6</a> showed <code>counter++</code> losing updates because two threads interleave in the middle of the three-step read-modify-write. We need to make that section indivisible.
+</p>
+
+<h2>The one idea</h2>
+<p>
+A <strong>mutex</strong> (mutual exclusion lock) is a small object with two states: locked or unlocked. It supports two operations:
+</p>
+<ul>
+  <li><code>lock</code>: if the mutex is unlocked, take it and continue. If it's already locked, <em>block</em> until the current holder releases it.</li>
+  <li><code>unlock</code>: release the mutex so another waiting thread can take it.</li>
+</ul>
+<p>
+By wrapping a critical section in <code>lock</code> / <code>unlock</code>, you guarantee only one thread runs that code at a time. The other threads wait in line.
+</p>
+
+<div class="callout">
+<span class="label">Mental model</span>
+<p style="margin:0.3rem 0 0">
+Imagine a single-occupancy bathroom with one physical key. You take the key (lock), do your business (critical section), hang the key back (unlock). Anyone else waits at the door.
+</p>
+</div>
+
+<h2>See it in C</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;pthread.h&gt;
+
+int counter = 0;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+void *bump(void *arg) {
+    for (int i = 0; i &lt; 1000000; i++) {
+        pthread_mutex_lock(&amp;lock);
+        counter++;                     /* only one thread here at a time */
+        pthread_mutex_unlock(&amp;lock);
+    }
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&amp;t1, NULL, bump, NULL);
+    pthread_create(&amp;t2, NULL, bump, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    printf("counter = %d\n", counter);
+    return 0;
+}
+</code></pre>
+
+<pre><code>$ cc -pthread mutex_demo.c -o mutex_demo
+$ ./mutex_demo
+counter = 2000000
+$ ./mutex_demo
+counter = 2000000
+$ ./mutex_demo
+counter = 2000000
+</code></pre>
+
+<p>Every run: exactly 2 000 000. The race is gone.</p>
+
+<h2>Three rules for using a mutex</h2>
+<ol>
+  <li><strong>Every access to the shared data must take the same lock.</strong> A lock protects data, not code. If one thread updates <code>counter</code> without the lock, the whole scheme falls apart.</li>
+  <li><strong>Keep the critical section small.</strong> Anything inside the lock is single-threaded — you lose parallelism there. Put slow I/O, big computations, and <code>printf</code>s outside.</li>
+  <li><strong>Always unlock, even on error paths.</strong> If a thread grabs the lock and returns without unlocking, every other thread will wait forever. That's a <em>deadlock</em>.</li>
+</ol>
+
+<h2>The cost</h2>
+<p>
+Locking isn't free. The mutex demo runs measurably slower than the racy one — you traded raw speed for correctness. That's the fundamental tradeoff of concurrency: either the answers are right, or the runs are fast; you rarely get both for free.
+</p>
+<p>
+This is why designers work hard to <em>minimize</em> shared mutable state — the less you share, the less you need to lock.
+</p>
+
+<h2>What can still go wrong</h2>
+<div class="callout">
+<span class="label">Deadlock</span>
+<p style="margin:0.3rem 0 0">Thread A holds lock 1 and wants lock 2. Thread B holds lock 2 and wants lock 1. Both wait forever. Rule of thumb: always take multiple locks in the same global order.</p>
+</div>
+<div class="callout">
+<span class="label">Forgot-to-lock bug</span>
+<p style="margin:0.3rem 0 0">One code path touches shared data without the lock. Everything works 99% of the time, then produces mysterious wrong answers. Every access must use the lock.</p>
+</div>
+<div class="callout">
+<span class="label">Held-too-long</span>
+<p style="margin:0.3rem 0 0">Doing slow work while holding a lock (network I/O, heavy compute) serializes everyone. Get in, get out.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">A mutex protects:</p>
+  <button class="choice">The code lines it wraps.</button>
+  <button class="choice" data-correct="true">The data all threads share.</button>
+  <button class="choice">The thread that holds it.</button>
+  <p class="explain">A mutex is a convention: "before touching this data, take this lock." If one thread skips the lock, protection fails. Always associate a mutex with a specific piece of data in your head.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">A thread locks the mutex and then returns without unlocking. What happens?</p>
+  <button class="choice">Mutex releases at return.</button>
+  <button class="choice">Runtime frees it on exit.</button>
+  <button class="choice" data-correct="true">Every other waits forever.</button>
+  <p class="explain">Mutexes are not scope-bound in C. If you forget to unlock, the lock is held forever and other threads block forever. That's a classic deadlock.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">Which is generally the best practice?</p>
+  <button class="choice">Hold locks as long as possible.</button>
+  <button class="choice" data-correct="true">Hold locks as short as possible.</button>
+  <button class="choice">Take many locks at all times.</button>
+  <p class="explain">The critical section is single-threaded — you lose the point of having threads. Do the shared-data update, then release. Slow I/O and computation belong outside.</p>
+</div>
+
+<h2>Try it yourself</h2>
+<ol>
+  <li>Compile and run the mutex demo. Verify you always get exactly 2 000 000.</li>
+  <li>Time both versions with <code>time ./race</code> and <code>time ./mutex_demo</code>. Note the mutex version is noticeably slower — that's the correctness tax.</li>
+  <li><strong>Bonus deadlock:</strong> create two mutexes, <code>a</code> and <code>b</code>. Thread 1 locks <code>a</code> then <code>b</code>. Thread 2 locks <code>b</code> then <code>a</code>. Both should sleep 1 second between the two locks. Run it — it hangs forever. Kill it. That's your first deadlock, on purpose.</li>
+</ol>
+
+<h2>Read one thing</h2>
+<p>Primary: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf">OSTEP Chapter 28 — "Locks"</a>. Man page: <a href="https://man7.org/linux/man-pages/man3/pthread_mutex_lock.3p.html">man 3 pthread_mutex_lock</a>.</p>
+
+<h2>You've reached the end of the arc</h2>
+<p>
+You now have the full picture of the mission:
+</p>
+<ul>
+  <li>A <strong>process</strong> is a running program in its own memory. (<a href="0001-what-is-a-process.html">L1</a>)</li>
+  <li><strong>fork</strong> clones a process; <strong>wait</strong> collects the corpse; <strong>exec</strong> replaces the running program. (<a href="0002-fork-returns-twice.html">L2</a>, <a href="0003-wait-and-zombies.html">L3</a>, <a href="0004-exec-and-the-shell.html">L4</a>)</li>
+  <li>A <strong>thread</strong> is a worker inside a process; threads share memory. (<a href="0005-what-is-a-thread.html">L5</a>)</li>
+  <li>Sharing memory invites <strong>races</strong>; a <strong>mutex</strong> is the basic tool that fixes them. (<a href="0006-race-conditions.html">L6</a>, L7)</li>
+</ul>
+
+<div class="callout">
+<span class="label">Where to go from here (wisdom)</span>
+<p style="margin:0.3rem 0 0">
+The community of practice is where curiosity turns into real skill. High-signal spots to lurk or ask:
+<a href="https://reddit.com/r/C_Programming">r/C_Programming</a>,
+Stack Overflow tags <a href="https://stackoverflow.com/questions/tagged/pthreads">[pthreads]</a> and <a href="https://stackoverflow.com/questions/tagged/fork">[fork]</a>.
+And the definitive long read when you want to go deep: Michael Kerrisk's <em>The Linux Programming Interface</em>.
+</p>
+</div>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">
+You've completed the beginner arc. Say the word and we can go anywhere next: condition variables, deadlock in depth, atomics, thread pools, or writing a working tiny shell that pipes commands.
+</p>
+</div>
+
+<div class="lesson-footer">
+See also: all lessons —
+<a href="0001-what-is-a-process.html">L1</a> ·
+<a href="0002-fork-returns-twice.html">L2</a> ·
+<a href="0003-wait-and-zombies.html">L3</a> ·
+<a href="0004-exec-and-the-shell.html">L4</a> ·
+<a href="0005-what-is-a-thread.html">L5</a> ·
+<a href="0006-race-conditions.html">L6</a> ·
+<a href="../reference/glossary.html">Glossary</a> ·
+<a href="../reference/cheatsheet.html">Cheat sheet</a>
+</div>
+
+</main>
+</body>
+</html>

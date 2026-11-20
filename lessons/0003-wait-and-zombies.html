@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 3 — wait() and zombies</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main>
+
+<span class="tag">Lesson 3</span>
+<span class="tag">syscall + tiny C</span>
+
+<h1>wait() and zombies</h1>
+<p class="subtitle">A child finishes. Someone has to notice. Otherwise it lingers.</p>
+
+<h2>Recall</h2>
+<p>
+<a href="0002-fork-returns-twice.html">Last lesson</a>, <code>fork()</code> gave us a parent and a child running side by side. Two questions we swept under the rug:
+</p>
+<ul>
+  <li>What happens when the <em>child</em> finishes first?</li>
+  <li>How does the <em>parent</em> find out?</li>
+</ul>
+
+<h2>The one idea</h2>
+<p>
+When a child process exits, the kernel does <strong>not</strong> immediately erase it. It keeps a tiny record — the child's PID and its exit status — so the parent can ask "how did my kid die?". That leftover record is called a <strong>zombie</strong>.
+</p>
+<p>
+The parent claims the record by calling <code>wait()</code>. That call:
+</p>
+<ol>
+  <li>Blocks (pauses) until a child exits, if none has yet.</li>
+  <li>Returns the exited child's PID.</li>
+  <li>Writes the child's exit status into an <code>int</code> you provide.</li>
+  <li>Tells the kernel it's safe to erase the record. Zombie gone.</li>
+</ol>
+
+<div class="callout">
+<span class="label">The bug this prevents</span>
+<p style="margin:0.3rem 0 0">
+If a parent forks lots of children and never <code>wait()</code>s, every one becomes a permanent zombie. They take almost no memory each, but the PID table is finite. A long-running server that forgets to wait can eventually run out of PIDs.
+</p>
+</div>
+
+<h2>See it in C</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/wait.h&gt;
+
+int main(void) {
+    pid_t rc = fork();
+    if (rc == 0) {
+        printf("child %d: doing work...\n", getpid());
+        sleep(1);
+        exit(42);            /* exit status = 42 */
+    } else {
+        int status;
+        pid_t done = wait(&amp;status);
+        if (WIFEXITED(status)) {
+            printf("parent: child %d exited with %d\n",
+                   done, WEXITSTATUS(status));
+        }
+    }
+    return 0;
+}
+</code></pre>
+
+<pre><code>$ ./wait_demo
+child 52310: doing work...
+parent: child 52310 exited with 42
+</code></pre>
+
+<p>
+The parent slept inside <code>wait()</code> until the child ran <code>exit(42)</code>. Then the parent woke up, learned the PID and status, and cleaned up the zombie automatically.
+</p>
+
+<h3>Reading <code>status</code></h3>
+<p>The <code>int</code> that <code>wait()</code> fills isn't a plain exit code — it's a packed value. Use the macros:</p>
+<ul>
+  <li><code>WIFEXITED(status)</code> — true if the child exited normally.</li>
+  <li><code>WEXITSTATUS(status)</code> — the actual exit code (only valid if the above is true).</li>
+  <li><code>WIFSIGNALED(status)</code> — true if the child was killed by a signal (e.g. segfault).</li>
+</ul>
+
+<h2>The two undead states</h2>
+<div class="callout">
+<span class="label">Zombie</span>
+<p style="margin:0.3rem 0 0"><strong>Child died, parent hasn't waited yet.</strong> Shown as <code>Z</code> or <code>&lt;defunct&gt;</code> in <code>ps</code>. Harmless one at a time; leaks in bulk.</p>
+</div>
+<div class="callout">
+<span class="label">Orphan</span>
+<p style="margin:0.3rem 0 0"><strong>Parent died first, child still running.</strong> The kernel re-parents the child to PID 1 (<code>init</code> / <code>systemd</code>), which routinely calls <code>wait()</code>. So orphans are cleaned up automatically. Zombies aren't — because their parent is still alive and responsible.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="q">A parent forks a child. The child exits. The parent never calls <code>wait()</code>. What is the child?</p>
+  <button class="choice">A live process still.</button>
+  <button class="choice">An orphan of the init.</button>
+  <button class="choice" data-correct="true">A zombie in the table.</button>
+  <p class="explain">Child exited but its record can't be freed until the parent acknowledges it. That's the definition of a zombie.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">A parent forks a child, then the parent exits immediately. The child keeps running. What is the child?</p>
+  <button class="choice" data-correct="true">An orphan, adopted by init.</button>
+  <button class="choice">A zombie in the table.</button>
+  <button class="choice">Killed with its parent.</button>
+  <p class="explain">Children outlive their parents just fine. PID 1 becomes the new parent and will wait() for it when it finishes.</p>
+</div>
+
+<div class="quiz">
+  <p class="q">A parent calls <code>wait(&amp;status)</code> before the child has exited. What happens?</p>
+  <button class="choice">Returns -1 immediately fast.</button>
+  <button class="choice">Returns zero with empty status.</button>
+  <button class="choice" data-correct="true">Blocks until child finally exits.</button>
+  <p class="explain"><code>wait()</code> is blocking by design — it puts the parent to sleep until a child is reapable. Use <code>waitpid(..., WNOHANG)</code> if you want a non-blocking check.</p>
+</div>
+
+<h2>Try it yourself</h2>
+<ol>
+  <li>Compile and run <code>wait_demo.c</code>.</li>
+  <li>Make a zombie: in the child, call <code>exit(0)</code> after 1 second. In the parent, <code>sleep(30)</code> <em>without</em> calling <code>wait()</code>. While the parent sleeps, run <code>ps -el | grep defunct</code> in another terminal — you'll see the zombie.</li>
+  <li>Fork <em>three</em> children in a loop, each sleeping a different amount, and <code>wait()</code> three times. Notice the parent gets them in the order they <em>finish</em>, not the order they were created.</li>
+</ol>
+
+<h2>Read one thing</h2>
+<p>Primary source: <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf">OSTEP Chapter 5</a>, §5.2 (<code>wait()</code>). Man page: <a href="https://man7.org/linux/man-pages/man2/wait.2.html">man 2 wait</a>.</p>
+
+<div class="callout">
+<span class="label">Ask your teacher</span>
+<p style="margin:0.3rem 0 0">Curious about <code>waitpid()</code>, <code>SIGCHLD</code>, or how shells run background jobs? Ask — those are all natural next steps from here.</p>
+</div>
+
+<div class="lesson-footer">
+Next up (Lesson 4): <em><code>exec()</code> — how <code>fork</code> plus <code>exec</code> is how every program in Unix gets started.</em><br>
+See also: <a href="0001-what-is-a-process.html">L1</a> · <a href="0002-fork-returns-twice.html">L2</a> · <a href="../reference/glossary.html">Glossary</a>
+</div>
+
+</main>
+</body>
+</html>

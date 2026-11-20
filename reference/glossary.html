@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Glossary — Processes &amp; Threads</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main>
+<h1>Glossary</h1>
+<p class="subtitle">Definitions to keep consistent across every lesson.</p>
+
+<h2>Core</h2>
+<p><strong>Program</strong> — a file on disk containing machine instructions (e.g. <code>/bin/ls</code>). Inert.</p>
+<p><strong>Process</strong> — a <em>running</em> instance of a program. Has its own memory, its own file descriptors, and at least one thread of execution. Identified by a PID.</p>
+<p><strong>Thread</strong> — an independent line of execution <em>inside</em> a process. Threads in the same process share memory (heap, globals) but each has its own stack and CPU registers.</p>
+<p><strong>PID</strong> — Process ID. A number the kernel assigns to each process.</p>
+<p><strong>Kernel</strong> — the core of the OS. The referee that decides which process/thread runs on the CPU next.</p>
+
+<h2>C / POSIX APIs</h2>
+<p><code>fork()</code> — creates a new process by cloning the current one. Returns twice: <code>0</code> in the child, the child's PID in the parent.</p>
+<p><code>exec…()</code> — replaces the current process's program with a different one (keeps the PID).</p>
+<p><code>wait()</code> / <code>waitpid()</code> — the parent blocks until a child process exits, and collects its exit status.</p>
+<p><code>getpid()</code> / <code>getppid()</code> — this process's PID / this process's parent's PID.</p>
+<p><code>pthread_create()</code> — spawns a new thread inside the current process.</p>
+<p><code>pthread_join()</code> — waits for a thread to finish.</p>
+
+<h2>Concepts we'll meet later</h2>
+<p><strong>Context switch</strong> — the kernel saving one running thread's state and loading another's.</p>
+<p><strong>Race condition</strong> — a bug where the outcome depends on the unpredictable ordering of threads.</p>
+<p><strong>Mutex</strong> — a lock that lets only one thread into a section of code at a time.</p>
+
+<p>
+  <a href="../lessons/0001-what-is-a-process.html">L1</a> ·
+  <a href="../lessons/0002-fork-returns-twice.html">L2</a> ·
+  <a href="../lessons/0003-wait-and-zombies.html">L3</a> ·
+  <a href="../lessons/0004-exec-and-the-shell.html">L4</a> ·
+  <a href="../lessons/0005-what-is-a-thread.html">L5</a> ·
+  <a href="../lessons/0006-race-conditions.html">L6</a> ·
+  <a href="../lessons/0007-mutex.html">L7</a> ·
+  <a href="cheatsheet.html">Cheat sheet</a>
+</p>
+</main>
+</body>
+</html>

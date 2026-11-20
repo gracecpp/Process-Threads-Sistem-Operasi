@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cheat sheet — Processes &amp; Threads in C</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main>
+
+<h1>Cheat sheet</h1>
+<p class="subtitle">The seven-lesson arc, compressed to one page.</p>
+
+<h2>Processes</h2>
+<pre><code>#include &lt;unistd.h&gt;
+#include &lt;sys/wait.h&gt;
+
+pid_t rc = fork();          /* clone the process              */
+if (rc &lt; 0)      { /* error */ }
+else if (rc == 0){ /* child : fork() returned 0            */ }
+else             { /* parent: fork() returned child's PID  */ }
+
+int status;
+pid_t done = wait(&amp;status);           /* block until any child exits */
+if (WIFEXITED(status))
+    int code = WEXITSTATUS(status);
+
+char *argv[] = {"ls", "-l", NULL};
+execvp("ls", argv);                    /* become another program     */
+/* code here only runs if exec failed */
+</code></pre>
+
+<h3>Rules</h3>
+<ul>
+  <li><code>fork()</code> returns <em>twice</em> — 0 in child, child PID in parent, -1 on error.</li>
+  <li>After fork, memory is copied but independent.</li>
+  <li>Every child must be <code>wait()</code>ed or it becomes a <strong>zombie</strong>.</li>
+  <li>If parent dies first, child is an <strong>orphan</strong> adopted by init (PID 1) — kernel handles cleanup.</li>
+  <li><code>exec…()</code> keeps the same PID; replaces the program.</li>
+  <li>The Unix pattern: <b>fork, then exec</b>. That's how every command runs.</li>
+</ul>
+
+<h2>Threads</h2>
+<pre><code>#include &lt;pthread.h&gt;
+/* compile with: cc -pthread */
+
+void *worker(void *arg) {
+    /* do work */
+    return NULL;
+}
+
+pthread_t t;
+pthread_create(&amp;t, NULL, worker, arg); /* start thread    */
+pthread_join(t, NULL);                  /* wait for thread */
+</code></pre>
+
+<h3>Rules</h3>
+<ul>
+  <li>All threads in a process <strong>share memory</strong> (globals, heap).</li>
+  <li>Each thread has its own <strong>stack</strong> and its own registers.</li>
+  <li>If one thread crashes the process, all threads die.</li>
+  <li>Order of execution across threads is <strong>never</strong> guaranteed.</li>
+</ul>
+
+<h2>Mutex</h2>
+<pre><code>pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_lock(&amp;lock);
+/* critical section: only one thread here at a time */
+pthread_mutex_unlock(&amp;lock);
+</code></pre>
+
+<h3>Rules</h3>
+<ul>
+  <li>A mutex protects <em>data</em>, not code. Every access to the shared data must take the same lock.</li>
+  <li>Keep critical sections short. No I/O inside if you can help it.</li>
+  <li>Always unlock. A forgotten unlock = permanent deadlock.</li>
+  <li>To avoid deadlock across multiple locks: always acquire them in the same global order.</li>
+</ul>
+
+<h2>Process vs Thread — at a glance</h2>
+<table style="width:100%; border-collapse:collapse; margin:1rem 0;">
+  <thead><tr style="border-bottom: 2px solid var(--rule);">
+    <th style="text-align:left;padding:0.4rem 0.6rem;"></th>
+    <th style="text-align:left;padding:0.4rem 0.6rem;">Process</th>
+    <th style="text-align:left;padding:0.4rem 0.6rem;">Thread</th>
+  </tr></thead>
+  <tbody>
+    <tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Memory</td><td style="padding:0.4rem 0.6rem;">private, isolated</td><td style="padding:0.4rem 0.6rem;">shared with siblings</td></tr>
+    <tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Create</td><td style="padding:0.4rem 0.6rem;"><code>fork()</code></td><td style="padding:0.4rem 0.6rem;"><code>pthread_create()</code></td></tr>
+    <tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Wait</td><td style="padding:0.4rem 0.6rem;"><code>wait()</code>, <code>waitpid()</code></td><td style="padding:0.4rem 0.6rem;"><code>pthread_join()</code></td></tr>
+    <tr style="border-bottom:1px solid var(--rule);"><td style="padding:0.4rem 0.6rem;">Crash</td><td style="padding:0.4rem 0.6rem;">only that one dies</td><td style="padding:0.4rem 0.6rem;">whole process dies</td></tr>
+    <tr><td style="padding:0.4rem 0.6rem;">Cost to create</td><td style="padding:0.4rem 0.6rem;">high (whole copy)</td><td style="padding:0.4rem 0.6rem;">low (share space)</td></tr>
+  </tbody>
+</table>
+
+<h2>Common gotchas</h2>
+<ul>
+  <li><strong>Two forks in a row → 4 processes.</strong> Each fork doubles.</li>
+  <li><strong>Code after successful <code>exec()</code> never runs.</strong></li>
+  <li><strong><code>counter++</code> is three CPU instructions</strong> — not atomic. Guard shared state.</li>
+  <li><strong><code>volatile</code> does not make things thread-safe.</strong></li>
+  <li><strong>Never assume ordering</strong> between two threads without an explicit sync primitive.</li>
+</ul>
+
+<p>
+Back to lessons:
+<a href="../lessons/0001-what-is-a-process.html">L1</a> ·
+<a href="../lessons/0002-fork-returns-twice.html">L2</a> ·
+<a href="../lessons/0003-wait-and-zombies.html">L3</a> ·
+<a href="../lessons/0004-exec-and-the-shell.html">L4</a> ·
+<a href="../lessons/0005-what-is-a-thread.html">L5</a> ·
+<a href="../lessons/0006-race-conditions.html">L6</a> ·
+<a href="../lessons/0007-mutex.html">L7</a> ·
+<a href="glossary.html">Glossary</a>
+</p>
+
+</main>
+</body>
+</html>
